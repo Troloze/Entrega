@@ -4,6 +4,7 @@ import os
 import pathlib
 from time import sleep
 
+dispatcher_ip = 'localhost'
 CLIENT_PATH = ""
 
 class GeoEye():
@@ -19,8 +20,10 @@ class GeoEye():
         while True:
             try: 
                 self.host_id = dispatcher.root.find_host()
+                print(f"Trying to connect to: {self.host_id}")
                 self.service_conn = rpyc.connect(self.host_id[0], self.host_id[1])
             except:
+                print("Failed to connect...")
                 sleep(0.5)
                 continue
             break
