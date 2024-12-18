@@ -27,28 +27,9 @@ class Dispatcher():
 
     def __init__(self):
         self.host_list_lock = threading.Lock()
-        threading.Thread(daemon=True, target=self.host_checkup).start()
         threading.Thread(daemon=True, target=self.dispatch_startup_thread).start()
         threading.Thread(daemon=True, target=self.rpyc_service_init).start()
         
-        
-
-    def host_checkup(self):
-        while True:
-            sleep(0.2)
-            self.host_list_lock.acquire()
-            dl = []
-            for h in self.hosts.keys():
-                print(h)
-                h_conn = rpyc.connect(h[0], h[1]+1000).root
-                try:
-                    h_conn.ping()
-                except:
-                    dl.append(h)
-            for h in dl:
-                del self.hosts[h]
-            self.host_list_lock.release()
-
     def dispatch_callback(self, ch, method, properties, body:bytes):
         print(body)
         msg = body.decode().split('?')
@@ -66,6 +47,7 @@ class Dispatcher():
     def find_new_host(self):
         ret = None
         self.host_list_lock.acquire()
+        print(self.hosts)
         ret = min(self.hosts, key = self.hosts.get)
         self.host_list_lock.release()
         return ret
@@ -74,10 +56,6 @@ dispatcher:Dispatcher
 
 class DispatchService(rpyc.Service):
     ALIASES = ["D2C"]
-    
-    def on_connect(self, conn):
-        print(getpeername(conn._channel.stream.sock))
-        return super().on_connect(conn)
     
     def exposed_find_host(self):
         print("New Client!")

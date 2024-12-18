@@ -2,10 +2,56 @@ import rpyc
 import sys
 import os
 import pathlib
+import threading
+import concurrent.futures
 from time import sleep
+
 
 dispatcher_ip = 'localhost'
 CLIENT_PATH = ""
+
+class ClientPoster():
+    def __init__(self, shards:list[bytes]):
+        self.shard_count = len(shards)
+        self.shards = list(shards)
+        self.lock = threading.Lock()
+        self.lock.acquire()
+    
+    def get_shard(self, shard_n):
+        if shard_n >= self.shard_count:
+            return None
+        return self.shards[shard_n]
+    
+    def end(self):
+        self.lock.release()
+
+    def join(self):
+        self.lock.acquire()
+        self.lock.release()
+
+current_poster:ClientPoster = None
+
+class LoadingFile():
+    def __init__(self, shard_count):
+        self.list = []
+        for i in range(0, shard_count):
+            self.list.append(None)
+        
+    pass
+
+class Client2HostGetService(rpyc.Service):
+    def exposed_get_shard(self, shard_n):
+        if current_poster == None:
+            return None, False
+        return current_poster.get_shard(shard_n), True
+    
+    def exposed_end(self):
+        if current_poster == None:
+            return False
+        current_poster.end()
+        return True
+        
+
 
 class GeoEye():
     service_conn = None
@@ -27,6 +73,7 @@ class GeoEye():
                 sleep(0.5)
                 continue
             break
+        print("You are connected!")
 
     def service(self):
         try:
@@ -37,11 +84,8 @@ class GeoEye():
             except:
                 self.connect()
         finally:
+            self.service_conn._config['sync_request_timeout'] = None
             return self.service_conn.root
-
-    def delete(self, name:str):
-        r = self.service().delete(name)
-        return True
 
     def post(self, name:str):
         try:
@@ -52,24 +96,64 @@ class GeoEye():
         except OSError:
             print("Não foi possível carregar o arquivo.")
             return False
-        r = self.service().post(name, F)
+        print(f"Posting file {name}")
+        r = self.service().get_shard_size()
+        print(r)
+        shards = []
+        for i in range(0, len(F), r):
+            shards.append(F[i:i+r])
+        global current_poster
+        current_poster = ClientPoster(shards)
+        self.service()
+        self.service().post(name, len(shards))
+        current_poster.join()
         return True
+
+    def threaded_get(self, name, shard, F):
+        get_conn = rpyc.connect(host=self.host_id[0], port=self.host_id[1] + 300)
+        get_conn._config['sync_request_timeout'] = None
+        ret = get_conn.root.get_shard(name, shard)
+        print("Thread says hi", ret)
+        F[shard] = ret
 
     def get(self, name:str):
         if pathlib.Path(CLIENT_PATH + name).is_file():
             print("Cliente já possui esse arquivo.")
             return False
-        g = self.service().get(name)
+        shard_count = self.service().get_start(name)
+        shards = [None] * int(shard_count)
+        print(f"Getting file {name} in {shard_count} parts")
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            for i in range(0, shard_count):
+                executor.submit(self.threaded_get, name, i, shards)
+            executor.shutdown(wait=True)
+
+        get_conn = rpyc.connect(host=self.host_id[0], port=self.host_id[1] + 300)
+        get_conn.root.end(name)
+
+        F = b''
+        for s in shards:
+            print(s)
+            F += s
+
         with open(CLIENT_PATH + name, "wb") as f:
-            f.write(g) 
+            f.write(F) 
         return True
     
+    def delete(self, name:str):
+        r = self.service().delete(name)
+        return True
 
     def list(self):
         list = self.service().list()
         return list
 
-def main():
+def client_host_get_init():
+    from rpyc.utils.server import ThreadedServer
+    host_service_thread = ThreadedServer(service=Client2HostGetService, port=32000, auto_register=True)
+    host_service_thread.start()
+
+def input_handler():
     GeoI = GeoEye()
     while True:
         task:str = input()
@@ -98,6 +182,12 @@ def main():
                     os.remove(CLIENT_PATH + msg[1])
                 else:
                     print("Arquivo não existe.")
+
+def main():
+    threading.Thread(target=client_host_get_init,daemon=True).start()
+    threading.Thread(target=input_handler, daemon=True).start()
+    while True:
+        pass
 
 if __name__ == '__main__':
     try:

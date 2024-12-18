@@ -1,3 +1,3 @@
-a = {}
-a[(1, 2)] = 2
-print(a[(1, 2)])
+a = {"Was": 2}
+
+print("Was" in a)
