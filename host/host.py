@@ -72,19 +72,24 @@ class file_tag():
     file_name:str
     file_shard_count:int
     loaded_shards:list
-    file_shards:dict[int, tuple[str, list[unit_tracker]]] = {}
-    loaded_file:dict[int, bytes] | None = None
+    file_shards:dict[int, tuple[str, list[unit_tracker]]]
+    loaded_file:dict[int, bytes] | None
     shard_lock:threading.Lock
-    parent = None
-    get_count = 0
-    get_lock = threading.Lock()
+    parent:object
+    get_count:int
+    get_lock:threading.Lock
 
     def __init__(self, name:str, shard_count:int, parent):
         self.file_name = name
         self.parent = parent
         self.file_shard_count = shard_count
         self.loaded_shards = [False] * int(shard_count)
+        self.file_shards = {}
+        self.get_count = 0
+        self.loaded_file = None
+        self.get_lock = threading.Lock()
         self.shard_lock = threading.Lock()
+        
 
     def threaded_send(self, u:unit_tracker, name, file):
         print(f"sending {name} to {u.address()}")
@@ -113,6 +118,7 @@ class file_tag():
         print(f"Deleting file {self.file_name}")
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             for shard in self.file_shards.values():
+                print(f"{shard[0]}")
                 for u in shard[1]:
                     executor.submit(self.threaded_delete, u, shard[0])
 
@@ -190,13 +196,17 @@ class Host():
     round_robin = 0
     cc_lock:threading.Lock
 
-    unit_list:list[unit_tracker] = []
-    unit_lock:threading.Lock = threading.Lock()
-    file_list:dict[str, file_tag] = {}
-    remote_files:dict[str, RemoteHost] = {}
+    unit_list:list[unit_tracker]
+    unit_lock:threading.Lock
+    file_list:dict[str, file_tag]
+    remote_files:dict[str, RemoteHost]
 
     def __init__(self):
+        self.unit_list = []
+        self.unit_lock = threading.Lock()
         self.cc_lock = threading.Lock()
+        self.file_list = {}
+        self.remote_files = {}
         connection = pika.BlockingConnection(pika.ConnectionParameters(host=dispatcher_ip))
         self.dispatcher_channel = connection.channel()
         self.dispatcher_channel.queue_declare(queue="DispatchQ")
@@ -247,7 +257,9 @@ class Host():
 
     def delete_file_callback(self, ch, method, properties, body):
         name = body.decode()
+        print(name)
         if name in self.file_list:
+            print(self.file_list[name].file_name)
             self.file_list[name].delete_file()
             del self.file_list[name]
         if name in self.remote_files:
@@ -289,7 +301,6 @@ class Host():
     def remote_get_start(self, name):
         if not name in self.remote_files:
             return None
-        print(f"getting from: {self.remote_files[name]}")
         return self.remote_files[name].connect().get_start(name)
 
     def remote_get_end(self, name):
@@ -300,15 +311,13 @@ class Host():
     def remote_get_shard(self, name, shard):
         if not name in self.remote_files:
             return None
-        print(f"Getting {name}_{shard} from {self.remote_files[name]}")
         a, b = self.remote_files[name].connect_get_stream().get(name, shard)
-        print(len(a), b)
         return a, b
 
     def get_start(self, name):
         if not name in self.file_list:
             return self.remote_get_start(name)
-        self.file_list[name].load_file()
+        threading.Thread(target=self.file_list[name].load_file, daemon=True)
         return self.file_list[name].file_shard_count
     
     def get_end(self, name):
@@ -320,7 +329,6 @@ class Host():
         if not name in self.file_list.keys():
             return self.remote_get_shard(name, shard)
         a, b = self.file_list[name].get_shard(shard)
-        print(len(a), b)
         return a, b
     
     def delete(self, name):
@@ -332,6 +340,10 @@ class Host():
         tag.post_shard(shard_n, shard)
 
     def start_post(self, name:str, shard_count:int, owner, client_id):
+        if name in self.remote_files:
+            return False
+        if name in self.file_list:
+            return False
         print(f"{owner} started posting {name}")
         tag = file_tag(name, shard_count, self)
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
@@ -339,8 +351,9 @@ class Host():
                 executor.submit(self.threaded_get_post, tag, i, owner, client_id)
         self.file_list[name] = tag
         print(f'{owner} finished posting {name}')
-        conn = rpyc.connect(owner[0], 32000 + client_id).root.end()
+        rpyc.connect(owner[0], 32000 + client_id).root.end()
         self.new_file_channel.basic_publish(exchange='FileReg', routing_key='', body=f"{name}?{current_ip}?{port}")
+        return True
 
     def list(self):
         ret = []
@@ -391,7 +404,7 @@ class Host2ClientService(rpyc.Service):
 
     def exposed_post(self, name, chunk_n, client_id):
         global host
-        host.start_post(name, chunk_n, self.client, client_id)
+        return host.start_post(name, chunk_n, self.client, client_id)
 
     def exposed_delete(self, name:str):
         host.delete(name)

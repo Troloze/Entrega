@@ -105,8 +105,11 @@ class GeoEye():
         global current_poster
         current_poster = ClientPoster(shards)
         self.service()
-        self.service().post(name, len(shards), client_id)
-        current_poster.join()
+        if self.service().post(name, len(shards), client_id):
+            current_poster.join()
+        else:
+            print("Arquivo já existe no sistema distribuido")
+            current_poster.end()
         return True
 
     def threaded_get(self, name, shard, F):
