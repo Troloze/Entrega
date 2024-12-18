@@ -184,6 +184,9 @@ def input_handler():
                     print("Arquivo não existe.")
 
 def main():
+    global dispatcher_ip
+    print("Insert dispatcher ip")
+    dispatcher_ip = input()
     threading.Thread(target=client_host_get_init,daemon=True).start()
     threading.Thread(target=input_handler, daemon=True).start()
     while True:

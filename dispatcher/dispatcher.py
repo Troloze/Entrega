@@ -65,7 +65,7 @@ def main():
     global current_ip
     hostname = socket.gethostname()
     current_ip = socket.gethostbyname(hostname)
-    current_ip = "localhost"
+    print(current_ip)
     global dispatcher
     dispatcher = Dispatcher()
     print("Dispatcher Initialized")

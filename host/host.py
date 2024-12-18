@@ -419,8 +419,11 @@ def main():
     global current_ip
     global host
     global host_id
+    global dispatcher_ip
     hostname = socket.gethostname()
     current_ip = socket.gethostbyname(hostname)
+    print("Insira Dispatcher IP")
+    dispatcher_ip = input()
     print("Insira Host ID")
     host_id = int(input())
     port = 123 + host_id
