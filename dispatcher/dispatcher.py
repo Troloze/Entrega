@@ -8,7 +8,7 @@ import pika
 import socket
 print(socket.__file__)
 
-current_ip:str
+current_ip = 'localhost'
 
 class Dispatcher():
     hosts = {}
@@ -63,8 +63,6 @@ class DispatchService(rpyc.Service):
 
 def main():
     global current_ip
-    hostname = socket.gethostname()
-    current_ip = socket.gethostbyname(hostname)
     print(current_ip)
     global dispatcher
     dispatcher = Dispatcher()

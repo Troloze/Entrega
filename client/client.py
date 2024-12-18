@@ -7,6 +7,7 @@ import concurrent.futures
 from time import sleep
 
 
+client_id:int
 dispatcher_ip = 'localhost'
 CLIENT_PATH = ""
 
@@ -20,6 +21,7 @@ class ClientPoster():
     def get_shard(self, shard_n):
         if shard_n >= self.shard_count:
             return None
+        print(f"Sending {shard_n}")
         return self.shards[shard_n]
     
     def end(self):
@@ -51,8 +53,6 @@ class Client2HostGetService(rpyc.Service):
         current_poster.end()
         return True
         
-
-
 class GeoEye():
     service_conn = None
     host_id:tuple
@@ -105,15 +105,20 @@ class GeoEye():
         global current_poster
         current_poster = ClientPoster(shards)
         self.service()
-        self.service().post(name, len(shards))
+        self.service().post(name, len(shards), client_id)
         current_poster.join()
         return True
 
     def threaded_get(self, name, shard, F):
         get_conn = rpyc.connect(host=self.host_id[0], port=self.host_id[1] + 300)
         get_conn._config['sync_request_timeout'] = None
-        ret = get_conn.root.get_shard(name, shard)
-        print("Thread says hi", ret)
+        for i in range(0, 10):
+            ret, status = get_conn.root.get(name, shard)
+            if not status:
+                sleep(0.1)
+                continue
+            break
+        print(f"{name}: {shard} = {len(ret)}")
         F[shard] = ret
 
     def get(self, name:str):
@@ -121,20 +126,19 @@ class GeoEye():
             print("Cliente já possui esse arquivo.")
             return False
         shard_count = self.service().get_start(name)
-        shards = [None] * int(shard_count)
+        shards = {}
         print(f"Getting file {name} in {shard_count} parts")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             for i in range(0, shard_count):
                 executor.submit(self.threaded_get, name, i, shards)
-            executor.shutdown(wait=True)
 
         get_conn = rpyc.connect(host=self.host_id[0], port=self.host_id[1] + 300)
         get_conn.root.end(name)
 
         F = b''
-        for s in shards:
-            print(s)
-            F += s
+        for i in range(0, shard_count):
+            print(len(shards[i]))
+            F += shards[i]
 
         with open(CLIENT_PATH + name, "wb") as f:
             f.write(F) 
@@ -150,7 +154,7 @@ class GeoEye():
 
 def client_host_get_init():
     from rpyc.utils.server import ThreadedServer
-    host_service_thread = ThreadedServer(service=Client2HostGetService, port=32000, auto_register=True)
+    host_service_thread = ThreadedServer(service=Client2HostGetService, port=32000 + client_id, auto_register=True)
     host_service_thread.start()
 
 def input_handler():
@@ -185,8 +189,9 @@ def input_handler():
 
 def main():
     global dispatcher_ip
-    print("Insert dispatcher ip")
-    dispatcher_ip = input()
+    global client_id
+    print("Insira client id")
+    client_id = int(input())
     threading.Thread(target=client_host_get_init,daemon=True).start()
     threading.Thread(target=input_handler, daemon=True).start()
     while True:

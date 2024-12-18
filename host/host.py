@@ -3,20 +3,20 @@ import concurrent.futures
 from rpyc.utils.server import ThreadedServer
 import sys
 import os
-import pathlib
 import threading
 import pika
 import pika.adapters.blocking_connection
 import socket
 import math
-import random
+from time import sleep
+
 
 FILE_SPLIT_SIZE = 1048576
 REPLICATION_RATE = 2
 
 port:int
 host_id:int
-current_ip:str
+current_ip = "localhost"
 dispatcher_ip = "localhost"
 
 class AutoLock():
@@ -72,8 +72,8 @@ class file_tag():
     file_name:str
     file_shard_count:int
     loaded_shards:list
-    file_shards = {}
-    loaded_file:list[bytes|None]|None
+    file_shards:dict[int, tuple[str, list[unit_tracker]]] = {}
+    loaded_file:dict[int, bytes] | None = None
     shard_lock:threading.Lock
     parent = None
     get_count = 0
@@ -120,9 +120,9 @@ class file_tag():
         return self.file_shard_count
     
     def threaded_load_shard(self, units:list[unit_tracker], name, shard_n):
-        from time import sleep
         sleep(0.2)
         ret = False
+        print(f'Loading {name}_{shard_n}')
         while not ret:
             for u in units:
                 file, status = u.get(name)
@@ -130,6 +130,7 @@ class file_tag():
                     continue
                 ret = True
                 break 
+        print(f'Loaded {name}_{shard_n}: {status} // {len(file)}')
         with AutoLock(self.get_lock):
             self.loaded_file[shard_n] = file
 
@@ -137,11 +138,13 @@ class file_tag():
         with AutoLock(self.get_lock):
             if self.loaded_file == None:
                 return None, False
-            if self.loaded_file[shard_n] == None:
+            if not shard_n in self.loaded_file:
                 return None, False
-            return self.loaded_file[shard_n]                
+            print("Gotten File")
+            return self.loaded_file[shard_n], True
         
     def load_file(self):
+        print(f"Loading {self.file_name} start:")
         start = False
         with AutoLock(self.get_lock):
             if self.get_count == 0:
@@ -149,10 +152,13 @@ class file_tag():
             self.get_count += 1
         if not start:
             return
-        self.loaded_file = [None] * self.file_shard_count
+        print("Starting to load...")
+        self.loaded_file = {}
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-            for i in self.file_shards:
-                executor.submit(self.threaded_load_shard,self.file_shards[i][1], self.file_shards[i][0], i)
+            for i in range(0, self.file_shard_count):
+                print(f"Entering {i}")
+                #self.threaded_load_shard(self.file_shards[i][1], self.file_shards[i][0], i)
+                executor.submit(self.threaded_load_shard, self.file_shards[i][1], self.file_shards[i][0], i)
      
     def unload_file(self):
         with AutoLock(self.get_lock):
@@ -167,7 +173,7 @@ class RemoteHost():
     host_addr:tuple[str,int]
 
     def __init__(self, ip:str, port:int):
-        self.host_addr = (ip, port)
+        self.host_addr = (ip, int(port))
 
     def connect(self):
         return rpyc.connect(host=self.host_addr[0],port=self.host_addr[1]+200).root   
@@ -271,7 +277,10 @@ class Host():
         self.unit_lock.acquire()
         unit_count = len(self.unit_list)
         ret = []
-        for i in range(self.round_robin, self.round_robin + n):
+        k = n
+        if n > unit_count:
+            k = unit_count
+        for i in range(self.round_robin, self.round_robin + k):
             ret.append(self.unit_list[i % unit_count])
         self.round_robin = (self.round_robin + 1) % unit_count
         self.unit_lock.release()
@@ -280,6 +289,7 @@ class Host():
     def remote_get_start(self, name):
         if not name in self.remote_files:
             return None
+        print(f"getting from: {self.remote_files[name]}")
         return self.remote_files[name].connect().get_start(name)
 
     def remote_get_end(self, name):
@@ -290,7 +300,10 @@ class Host():
     def remote_get_shard(self, name, shard):
         if not name in self.remote_files:
             return None
-        return self.remote_files[name].connect_get_stream().get_shard(name, shard)
+        print(f"Getting {name}_{shard} from {self.remote_files[name]}")
+        a, b = self.remote_files[name].connect_get_stream().get(name, shard)
+        print(len(a), b)
+        return a, b
 
     def get_start(self, name):
         if not name in self.file_list:
@@ -306,25 +319,27 @@ class Host():
     def get_shard(self, name, shard):
         if not name in self.file_list.keys():
             return self.remote_get_shard(name, shard)
-        return self.file_list[name].get_shard(shard)
-
+        a, b = self.file_list[name].get_shard(shard)
+        print(len(a), b)
+        return a, b
+    
     def delete(self, name):
         self.delete_channel.basic_publish(exchange='Deletion', routing_key='', body=name)
 
-    def threaded_get_post(self, tag:file_tag, shard_n, owner):
-        conn = rpyc.connect(owner[0], 32000).root
+    def threaded_get_post(self, tag:file_tag, shard_n, owner, client_id):
+        conn = rpyc.connect(owner[0], 32000 + client_id).root
         shard, status = conn.get_shard(shard_n)
         tag.post_shard(shard_n, shard)
 
-    def start_post(self, name:str, shard_count:int, owner):
+    def start_post(self, name:str, shard_count:int, owner, client_id):
         print(f"{owner} started posting {name}")
         tag = file_tag(name, shard_count, self)
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             for i in range(0, shard_count):
-                executor.submit(self.threaded_get_post, tag, i, owner)
+                executor.submit(self.threaded_get_post, tag, i, owner, client_id)
         self.file_list[name] = tag
         print(f'{owner} finished posting {name}')
-        conn = rpyc.connect(owner[0], 32000).root.end()
+        conn = rpyc.connect(owner[0], 32000 + client_id).root.end()
         self.new_file_channel.basic_publish(exchange='FileReg', routing_key='', body=f"{name}?{current_ip}?{port}")
 
     def list(self):
@@ -338,10 +353,10 @@ host:Host
 class Host2ClientGetService(rpyc.Service):
     
     def exposed_get(self, file_name, shard_n):
-        host.get_shard(file_name, shard_n)
+        return host.get_shard(file_name, shard_n)
 
     def exposed_end(self, file_name):
-        host.get_end(file_name)
+        return host.get_end(file_name)
 
 class Host2ClientService(rpyc.Service):
     ALIASES = ["H2C"]
@@ -374,9 +389,9 @@ class Host2ClientService(rpyc.Service):
     def exposed_get_shard_size(self):
         return FILE_SPLIT_SIZE
 
-    def exposed_post(self, name, chunk_n):
+    def exposed_post(self, name, chunk_n, client_id):
         global host
-        host.start_post(name, chunk_n, self.client)
+        host.start_post(name, chunk_n, self.client, client_id)
 
     def exposed_delete(self, name:str):
         host.delete(name)
@@ -416,17 +431,11 @@ def host_client_get_init():
 
 def main():
     global port
-    global current_ip
     global host
     global host_id
-    global dispatcher_ip
-    hostname = socket.gethostname()
-    current_ip = socket.gethostbyname(hostname)
-    print("Insira Dispatcher IP")
-    dispatcher_ip = input()
     print("Insira Host ID")
     host_id = int(input())
-    port = 123 + host_id
+    port = 1234 + host_id
     host = Host()
     threading.Thread(daemon=True, target=host_client_init).start()
     threading.Thread(daemon=True, target=host_dispatch_init).start()

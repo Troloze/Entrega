@@ -60,7 +60,7 @@ class UnitNode():
             print(f"    '{name}' does not exist.")
             return None, True
         print("    Success.")
-        return F, True, used_storage
+        return F, True
 
     def post(self, name, file):
         print(f"({node_id}) Request: Store file named '{name}'.")
@@ -135,7 +135,7 @@ def main():
     path = f"unitDump/{node_id}/"
     print("Enter Host ID")
     host_id = int(input())
-    port = (123 + host_id) * 10 + int(node_id)
+    port = (1234 + host_id) * 10 + int(node_id)
     global current_ip
     hostname = socket.gethostname()
     current_ip = socket.gethostbyname(hostname)
